@@ -6,6 +6,10 @@ import csv
 csvFilaPath = 'log.csv'
 
 
+rpm_id = '0x204'
+speed_id = '0x202'
+
+
 class FrameStream:
     def __init__(self):
         self.timeStream = []
@@ -19,18 +23,19 @@ with open(csvFilaPath, 'r') as file:
     rows = csv.reader(file, delimiter=',')
     for row in rows:
         if len(row) < 3 or not row[0].startswith('0x'):
-            print 'skip row:', row
+            print('skip row:', row)
             continue
         id = row[0]
         try:
             time = int(row[1])
         except ValueError:
-            print 'incorrect row time:', row
+            print('incorrect row time:', row)
             continue
         try:
-            bytes = map(lambda x: int(x), row[2:])
+            # base-16 is required to convert hex to int
+            bytes = [int(x, 16) for x in row[2:]]
         except ValueError:
-            print 'incorrect row numbers:', row
+            print('incorrect row numbers:', row)
             continue
         if not id in frames:
             frames[id] = FrameStream()
@@ -45,20 +50,20 @@ with open(csvFilaPath, 'r') as file:
         frame.timeStream.append(time)
         assert len(frame.timeStream) == len(frame.bytesStream[0])
 
-print 'CSV parsed'
+print('CSV parsed')
 
 errorsCount = 0
-for (_, frame) in frames.items():
+for (_, frame) in list(frames.items()):
     for byteStream in frame.bytesStream:
         for i, b5 in enumerate(zip(byteStream[:-4], byteStream[1:-3], byteStream[2:-2], byteStream[3:-1], byteStream[4:])):
             if b5[2] != b5[0] and b5[0] == b5[1] and b5[0] == b5[3] and b5[0] == b5[4]:
                 byteStream[i+2] = b5[0]
                 errorsCount += 1
 
-print 'errors fixed (bytes):', errorsCount
+print('errors fixed (bytes):', errorsCount)
 
 # calculate constancy intervals (means how much time the byte keeps constant bitmask):
-for (_, frame) in frames.items():
+for (_, frame) in list(frames.items()):
     for byteStream in frame.bytesStream:
         frame.constTimestamps.append(list())
         if len(set(byteStream)) > 10:
@@ -70,67 +75,54 @@ for (_, frame) in frames.items():
                     frame.constTimestamps[-1].append([timeStart, i])
                 timeStart = i+1
 
-for key, frame in frames.iteritems():
-    print key, "constant intervals: [", ', '.join([str(len(x)) for x in frame.constTimestamps]), "]"
+for key, frame in frames.items():
+    print(key, "constant intervals: [", ', '.join([str(len(x)) for x in frame.constTimestamps]), "]")
 
 # make 4 subplots with shared X axis:
 fig, axs = plt.subplots(4, 1, sharex='all')
-plt.xlim(frames.values()[0].timeStream[0] * 0.001, frames.values()[0].timeStream[-1] * 0.001)
+plt.xlim(list(frames.values())[0].timeStream[0] * 0.001, list(frames.values())[0].timeStream[-1] * 0.001)
 # fig.tight_layout() - brakes buttons
 plt.subplots_adjust(left=0.05, right=0.99, top=0.9, bottom=0.1)
 
 # display graphs of parsed and calculated RPM, Torque, etc. :
-axs[0].set_title('0x280 parsed')
-x = map(lambda time: time * 0.001, frames['0x280'].timeStream)
-y = map(lambda (b1, b2): (b1*256 + b2) / 4 / 10, zip(frames['0x280'].bytesStream[3], frames['0x280'].bytesStream[2]))
+axs[0].set_title('RPM & Throttle Position Parsed (0x204)')
+x = [time * 0.001 for time in frames[rpm_id].timeStream]
+y = [(b1_b2[0]*256 + b1_b2[1]) * 2 / 10 for b1_b2 in zip(frames[rpm_id].bytesStream[3], frames[rpm_id].bytesStream[4])]
 axs[0].plot(x, y, label='RPM /10')
-y = map(lambda b: b * 2, frames['0x280'].bytesStream[1])
-axs[0].plot(x, y, label='Torque')
-y = map(lambda b: b, frames['0x280'].bytesStream[5])
-axs[0].plot(x, y, label='Acceleration pedal')
-axs[0].fill_between(x, 0, y, label='Acceleration pedal', facecolor='red', alpha=0.25)
-# byte #0 contains bitmask of clutch and acceleration pedals, display area when the clutch is pressed:
-y = map(lambda b: b, frames['0x280'].bytesStream[0])
-collection = plt_collections.BrokenBarHCollection.span_where(x, ymin=0, ymax=20, where=[dy <= 1 for dy in y], facecolor='green', alpha=0.25)
-axs[0].add_collection(collection)
+
+# throttle position
+x = [time * 0.001 for time in frames[rpm_id].timeStream]
+# will show what * the pedal was down amplified by 100. 500 means pedal fully down
+y = [(b1_b22[0] * 256 + b1_b22[1]) / 65792 * 500 for b1_b22 in zip(frames[rpm_id].bytesStream[1], frames[rpm_id].bytesStream[2])]
+axs[0].plot(x, y, label='Throttle', alpha=0.5)
+axs[0].fill_between(x, 0, y, label='Throttle', facecolor='green', alpha=0.25)
+
 
 # dispaly speed steering angle and L/R forces:
-axs[1].set_title('0x1A0, 0xC2, 0x540, 0x5C0 parsed')
-x = map(lambda time: time * 0.001, frames['0x1A0'].timeStream)
-y = map(lambda (b1, b2): (b1*256 + b2) * 0.005, zip(frames['0x1A0'].bytesStream[3], frames['0x1A0'].bytesStream[2]))
-axs[1].plot(x, y, label='Speed')
-y = map(lambda b: b, frames['0x1A0'].bytesStream[1])
-# byte #1 contains bitmask for brake pedal, display area when brake is pressed:
-collection = plt_collections.BrokenBarHCollection.span_where(x, ymin=-10, ymax=10, where=[dy == 72 for dy in y], facecolor='red', alpha=0.25)
-axs[1].add_collection(collection)
-x = map(lambda time: time * 0.001, frames['0xC2'].timeStream)
-y = map(lambda (b1, b2): ((128 - b1 if b1 & 128 else b1) * 256 + b2) / 256, zip(frames['0xC2'].bytesStream[1], frames['0xC2'].bytesStream[0]))
-axs[1].plot(x, y, label='Steering')
-axs[1].fill_between(x, 0, y, label='Steering', facecolor='green', alpha=0.25)
-x = map(lambda time: time * 0.001, frames['0x540'].timeStream)
-y = map(lambda b: b, frames['0x540'].bytesStream[7])
-axs[1].plot(x, y, label='Gear')
-x = map(lambda time: time * 0.001, frames['0x5C0'].timeStream)
-y = map(lambda b: b, frames['0x5C0'].bytesStream[2])
-axs[1].plot(x, y, label='L. force')
-axs[1].fill_between(x, [128 for a in y], y, label='L. force', facecolor='blue', alpha=0.25)
+axs[1].set_title('Speed (MPH) (0x202)')
+x = [time * 0.001 for time in frames[speed_id].timeStream]
+y = [(b1_b21[0]*256 + b1_b21[1]) / 175 for b1_b21 in zip(frames[speed_id].bytesStream[6], frames[speed_id].bytesStream[7])]
+axs[1].plot(x, y, label='Speed (mph)')
+
+
+
 
 
 def displayCustomFrame(frameId):
     # display raw values of 8 bytes of specified CAN ID, skip constant and noise bytes:
     bytesCount = len(frames[frameId].bytesStream)
     axs[2].set_title(frameId + ': ' + str(bytesCount) + ' bytes')
-    x = map(lambda time: time * 0.001, frames[frameId].timeStream)
+    x = [time * 0.001 for time in frames[frameId].timeStream]
     for i in range(0, bytesCount):
         y = frames[frameId].bytesStream[i]
-        dy = map(lambda (v1, v2): v2-v1, zip(y, y[1:]))
-        avr = sum(map(lambda x: abs(x), dy))
+        dy = [v1_v2[1]-v1_v2[0] for v1_v2 in zip(y, y[1:])]
+        avr = sum([abs(x) for x in dy])
         if avr == 0:
-            print frameId, 'skip constant byte', i
+            print(frameId, 'skip constant byte', i)
             continue  # skip constant byte
         avr /= len(dy)
         if avr > 5:
-            print frameId, 'skip noise byte', i
+            print(frameId, 'skip noise byte', i)
             continue  # skip noise
         axs[2].plot(x, y, label='Byte ' + str(i))
     axs[2].legend(fontsize='x-small')
@@ -146,7 +138,7 @@ def displayCustomFrame(frameId):
         for i, timestamp in enumerate(byteTimestamps):
             timeStart = frame.timeStream[timestamp[0]] * 0.001
             timeEnd = frame.timeStream[timestamp[1]] * 0.001
-            axs[3].barh(y=b, bottom=b+1, width=timeEnd - timeStart, left=prevTimeStart, color=('yellow' if i % 2 == 0 else 'lime'))
+            axs[3].barh(y=b, width=timeEnd - timeStart, left=prevTimeStart, color=('yellow' if i % 2 == 0 else 'lime'))
             prevTimeStart = timeEnd
             byteValue = frame.bytesStream[b][timestamp[0]]
             axs[3].text((timeStart + timeEnd) / 2, b + 0.5, str(byteValue), ha='center', va='center', color='black', fontsize='x-small')
@@ -156,14 +148,14 @@ axs[0].legend(fontsize='x-small')
 axs[1].legend(fontsize='x-small')
 
 frameIdIndex= 0
-frameId = frames.keys()[frameIdIndex]
+frameId = list(frames.keys())[frameIdIndex]
 def nextClick(event):
     global frameId
     global frameIdIndex
     axs[2].clear()
     axs[3].clear()
     frameIdIndex = (frameIdIndex + 1) % len(frames)
-    frameId = frames.keys()[frameIdIndex]
+    frameId = list(frames.keys())[frameIdIndex]
     displayCustomFrame(frameId)
     plt.draw()
 def prevClick(event):
@@ -172,7 +164,7 @@ def prevClick(event):
     axs[2].clear()
     axs[3].clear()
     frameIdIndex = (frameIdIndex - 1) % len(frames)
-    frameId = frames.keys()[frameIdIndex]
+    frameId = list(frames.keys())[frameIdIndex]
     displayCustomFrame(frameId)
     plt.draw()
 axprev = plt.axes([0.88, 0.01, 0.05, 0.05])
